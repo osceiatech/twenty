@@ -3903,6 +3903,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@epic-web/invariant@npm:^1.0.0":
+  version: 1.0.0
+  resolution: "@epic-web/invariant@npm:1.0.0"
+  checksum: 10c0/72dbeb026e4e4eb3bc9c65739b91408ca77ab7d603a2494fa2eff3790ec22892c4caba751cffdf30f5ccf0e7ba79c1e9c96cf0a357404b9432bf1365baac23ca
+  languageName: node
+  linkType: hard
+
 "@esbuild-kit/core-utils@npm:^3.3.2":
   version: 3.3.2
   resolution: "@esbuild-kit/core-utils@npm:3.3.2"
@@ -27593,6 +27600,19 @@ __metadata:
     "@types/luxon": "npm:~3.3.0"
     luxon: "npm:~3.3.0"
   checksum: 10c0/3112d4cb0aa1c1129c0bb742eec205e38948806c907e21a0680d1aa83a1270bfade9fcf090c1604529684d21a64d74eb89075e25c16d48d95cf3c5b5d032f316
+  languageName: node
+  linkType: hard
+
+"cross-env@npm:^10.0.0":
+  version: 10.0.0
+  resolution: "cross-env@npm:10.0.0"
+  dependencies:
+    "@epic-web/invariant": "npm:^1.0.0"
+    cross-spawn: "npm:^7.0.6"
+  bin:
+    cross-env: dist/bin/cross-env.js
+    cross-env-shell: dist/bin/cross-env-shell.js
+  checksum: 10c0/d16ffc3734106577d57b6253d81ab50294623bd59f96e161033eaf99c1c308ffbaba8463c23a6c0f72e841eff467cb7007a0a551f27554fcf2bbf6598cd828f9
   languageName: node
   linkType: hard
 
@@ -51466,6 +51486,7 @@ __metadata:
     archiver: "npm:^7.0.1"
     chromatic: "npm:^6.18.0"
     concurrently: "npm:^8.2.2"
+    cross-env: "npm:^10.0.0"
     cross-var: "npm:^1.1.0"
     danger: "npm:^11.3.0"
     danger-plugin-todos: "npm:^1.3.1"
