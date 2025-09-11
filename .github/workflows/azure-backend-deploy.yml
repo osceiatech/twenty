@@ -1,0 +1,294 @@
+name: Deploy Backend - Twenty CRM Azure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'packages/twenty-server/**'
+      - 'packages/twenty-shared/**'
+      - 'packages/twenty-emails/**'
+  workflow_dispatch:
+
+concurrency:
+  group: backend-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '18'
+  SERVER_PATH: 'packages/twenty-server'
+  SHARED_PATH: 'packages/twenty-shared'
+  EMAILS_PATH: 'packages/twenty-emails'
+
+jobs:
+  build-backend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          # Install root dependencies
+          npm install
+          
+          # Install workspace dependencies
+          npm run install:packages
+
+      - name: Build shared dependencies
+        run: |
+          # Build twenty-shared (required by server)
+          cd ${{ env.SHARED_PATH }}
+          npm run build
+          
+          # Build twenty-emails (required by server)
+          cd ../${{ env.EMAILS_PATH }}
+          npm run build
+
+      - name: Create backend .env for production
+        working-directory: ${{ env.SERVER_PATH }}
+        run: |
+          cat > .env.production << EOF
+          # === AZURE PRODUCTION ENVIRONMENT ===
+          NODE_ENV=production
+          
+          # Server Configuration
+          SERVER_URL=https://twenty-crm-backend.azurewebsites.net
+          FRONT_BASE_URL=https://twenty-crm-frontend.azurewebsites.net
+          NODE_PORT=\${PORT:-8080}
+          
+          # Security (Update these with your secure values)
+          APP_SECRET=\${APP_SECRET}
+          
+          # Database (Supabase)
+          PG_DATABASE_URL=\${PG_DATABASE_URL}
+          PG_DATABASE_HOST=\${PG_DATABASE_HOST}
+          PG_DATABASE_PORT=\${PG_DATABASE_PORT:-6543}
+          PG_DATABASE_USER=\${PG_DATABASE_USER}
+          PG_DATABASE_PASSWORD=\${PG_DATABASE_PASSWORD}
+          
+          # Redis Cache
+          REDIS_URL=\${REDIS_URL}
+          CACHE_STORAGE_TYPE=redis
+          
+          # CORS Configuration
+          CORS_ORIGIN=https://twenty-crm-frontend.azurewebsites.net
+          
+          # Rate Limiting
+          API_RATE_LIMITING_TTL=100
+          API_RATE_LIMITING_LIMIT=100
+          
+          # Features
+          IS_CONFIG_VARIABLES_IN_DB_ENABLED=false
+          DISABLE_DB_MIGRATIONS=false
+          
+          # Storage
+          STORAGE_TYPE=local
+          
+          # Logging
+          LOG_LEVEL=info
+          
+          # Azure specific
+          WEBSITES_PORT=8080
+          WEBSITE_NODE_DEFAULT_VERSION=18.19.0
+          SCM_DO_BUILD_DURING_DEPLOYMENT=false
+          EOF
+
+      - name: Build backend application
+        working-directory: ${{ env.SERVER_PATH }}
+        run: |
+          # TypeScript compilation
+          npm run build
+          
+          # Verify build output
+          ls -la dist/
+          
+          # Check if main entry file exists
+          if [ ! -f "dist/main.js" ]; then
+            echo "❌ Build failed - main.js not found"
+            exit 1
+          fi
+
+      - name: Prepare production package
+        working-directory: ${{ env.SERVER_PATH }}
+        run: |
+          # Create production directory
+          mkdir -p ../backend-production
+          
+          # Copy built application
+          cp -r dist/* ../backend-production/
+          
+          # Copy production dependencies package.json
+          cat > ../backend-production/package.json << EOF
+          {
+            "name": "twenty-crm-backend",
+            "version": "1.0.0",
+            "description": "Twenty CRM Backend - Azure Production",
+            "main": "main.js",
+            "scripts": {
+              "start": "node main.js",
+              "start:prod": "node main.js"
+            },
+            "dependencies": {
+              "@nestjs/core": "^10.0.0",
+              "@nestjs/common": "^10.0.0",
+              "@nestjs/platform-express": "^10.0.0",
+              "@nestjs/graphql": "^12.0.0",
+              "@apollo/server": "^4.0.0",
+              "graphql": "^16.8.0",
+              "typeorm": "^0.3.0",
+              "pg": "^8.11.0",
+              "redis": "^4.6.0",
+              "class-validator": "^0.14.0",
+              "class-transformer": "^0.5.0",
+              "passport": "^0.6.0",
+              "passport-jwt": "^4.0.0",
+              "bcrypt": "^5.1.0",
+              "uuid": "^9.0.0",
+              "lodash": "^4.17.21",
+              "moment": "^2.29.0",
+              "cors": "^2.8.5",
+              "helmet": "^7.0.0",
+              "compression": "^1.7.4",
+              "express-rate-limit": "^6.10.0"
+            },
+            "engines": {
+              "node": "18.x",
+              "npm": ">=8.0.0"
+            }
+          }
+          EOF
+          
+          # Copy environment file
+          cp .env.production ../backend-production/.env
+          
+          # Copy any additional required files
+          if [ -f "package-lock.json" ]; then
+            cp package-lock.json ../backend-production/
+          fi
+
+      - name: Install production dependencies
+        working-directory: packages/backend-production
+        run: npm install --production --prefer-offline
+
+      - name: Upload backend build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-build
+          path: packages/backend-production
+          retention-days: 1
+
+  deploy-backend:
+    runs-on: ubuntu-latest
+    needs: build-backend
+    environment: production
+
+    steps:
+      - name: Download backend build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-build
+          path: ./backend-dist
+
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          # Alternative: use publish profile
+          # publish-profile: ${{ secrets.AZURE_BACKEND_PUBLISH_PROFILE }}
+
+      - name: Deploy to Azure App Service - Backend
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: 'twenty-crm-backend'  # Substitua pelo nome do seu App Service
+          slot-name: 'production'
+          package: ./backend-dist
+
+      - name: Configure App Service settings
+        uses: azure/appservice-settings@v1
+        with:
+          app-name: 'twenty-crm-backend'
+          app-settings-json: |
+            [
+              {
+                "name": "NODE_PORT",
+                "value": "8080"
+              },
+              {
+                "name": "WEBSITES_PORT", 
+                "value": "8080"
+              },
+              {
+                "name": "NODE_ENV",
+                "value": "production"
+              },
+              {
+                "name": "WEBSITE_NODE_DEFAULT_VERSION",
+                "value": "18.19.0"
+              },
+              {
+                "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
+                "value": "false"
+              }
+            ]
+
+      - name: Test deployment
+        run: |
+          echo "Testing backend deployment..."
+          sleep 45
+          
+          # Test health endpoint
+          BACKEND_URL="https://twenty-crm-backend.azurewebsites.net"
+          
+          echo "Testing health endpoint..."
+          if curl -f -s "$BACKEND_URL/healthz" > /dev/null; then
+            echo "✅ Health check passed!"
+          else
+            echo "⚠️ Health check failed, testing root endpoint..."
+            if curl -f -s "$BACKEND_URL" > /dev/null; then
+              echo "✅ Backend is responding!"
+            else
+              echo "❌ Backend deployment failed - not responding"
+              exit 1
+            fi
+          fi
+          
+          # Test GraphQL endpoint
+          echo "Testing GraphQL endpoint..."
+          if curl -f -s "$BACKEND_URL/graphql" > /dev/null; then
+            echo "✅ GraphQL endpoint is accessible!"
+          else
+            echo "⚠️ GraphQL endpoint not accessible (this may be normal without authentication)"
+          fi
+
+      - name: Run database migrations (if needed)
+        run: |
+          echo "🔄 Database migrations should be run manually or configured in App Service:"
+          echo "   - Add migration command to startup script if needed"
+          echo "   - Ensure database connection is properly configured"
+          
+          # Note: Migrations are typically run via App Service startup command:
+          # "npm run start:prod && npm run migration:run"
+
+      - name: Deployment summary
+        run: |
+          echo "🎉 Backend deployment completed!"
+          echo ""
+          echo "📋 Next steps:"
+          echo "1. Configure environment variables in Azure App Service:"
+          echo "   - APP_SECRET"
+          echo "   - PG_DATABASE_URL (Supabase connection string)"
+          echo "   - REDIS_URL (Azure Cache for Redis)"
+          echo ""
+          echo "2. Update frontend environment to point to:"
+          echo "   - https://twenty-crm-backend.azurewebsites.net"
+          echo ""
+          echo "3. Configure custom domain (optional)"
+          echo "4. Test the complete application flow"

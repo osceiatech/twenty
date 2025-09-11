@@ -1,0 +1,187 @@
+name: Deploy Frontend - Twenty CRM Azure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'packages/twenty-front/**'
+      - 'packages/twenty-shared/**'
+      - 'packages/twenty-ui/**'
+  workflow_dispatch:
+
+concurrency:
+  group: frontend-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '18'
+  FRONTEND_PATH: 'packages/twenty-front'
+  SHARED_PATH: 'packages/twenty-shared'
+  UI_PATH: 'packages/twenty-ui'
+
+jobs:
+  build-frontend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          # Install root dependencies
+          npm install
+          
+          # Install workspace dependencies
+          npm run install:packages
+
+      - name: Build shared dependencies
+        run: |
+          # Build twenty-shared (required dependency)
+          cd ${{ env.SHARED_PATH }}
+          npm run build
+          
+          # Build twenty-ui if exists
+          if [ -d "${{ env.UI_PATH }}" ]; then
+            cd ../../${{ env.UI_PATH }}
+            npm run build
+          fi
+
+      - name: Create frontend .env for production
+        working-directory: ${{ env.FRONTEND_PATH }}
+        run: |
+          cat > .env.production << EOF
+          # Azure App Service Environment
+          NODE_ENV=production
+          
+          # Backend URL - Update with your backend Azure App Service URL
+          REACT_APP_SERVER_BASE_URL=https://twenty-crm-backend.azurewebsites.net
+          
+          # Build Configuration
+          REACT_APP_BUILD_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          GENERATE_SOURCEMAP=false
+          
+          # Disable development features
+          REACT_APP_TELEMETRY_ENABLED=false
+          EOF
+
+      - name: Build frontend application
+        working-directory: ${{ env.FRONTEND_PATH }}
+        run: |
+          # Generate GraphQL types first (if needed)
+          if [ -f "package.json" ] && grep -q "graphql:generate" package.json; then
+            npm run graphql:generate || echo "GraphQL generation skipped"
+          fi
+          
+          # Build the application
+          npm run build
+          
+          # Verify build output
+          ls -la build/
+          
+          # Create server.js for Azure App Service
+          cat > build/server.js << 'EOF'
+          const express = require('express');
+          const path = require('path');
+          const app = express();
+          const port = process.env.PORT || 3000;
+          
+          // Serve static files from build directory
+          app.use(express.static(path.join(__dirname)));
+          
+          // Handle client-side routing
+          app.get('*', (req, res) => {
+            res.sendFile(path.join(__dirname, 'index.html'));
+          });
+          
+          app.listen(port, () => {
+            console.log(`Frontend server running on port ${port}`);
+          });
+          EOF
+
+      - name: Create production package.json
+        working-directory: ${{ env.FRONTEND_PATH }}/build
+        run: |
+          cat > package.json << EOF
+          {
+            "name": "twenty-crm-frontend",
+            "version": "1.0.0",
+            "description": "Twenty CRM Frontend - Azure Production",
+            "main": "server.js",
+            "scripts": {
+              "start": "node server.js"
+            },
+            "dependencies": {
+              "express": "^4.18.2"
+            },
+            "engines": {
+              "node": "18.x",
+              "npm": ">=8.0.0"
+            }
+          }
+          EOF
+
+      - name: Install production dependencies
+        working-directory: ${{ env.FRONTEND_PATH }}/build
+        run: npm install --production
+
+      - name: Upload frontend build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: ${{ env.FRONTEND_PATH }}/build
+          retention-days: 1
+
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    needs: build-frontend
+    environment: production
+
+    steps:
+      - name: Download frontend build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: ./frontend-dist
+
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          # Alternative: use publish profile
+          # publish-profile: ${{ secrets.AZURE_FRONTEND_PUBLISH_PROFILE }}
+
+      - name: Deploy to Azure App Service - Frontend
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: 'twenty-crm-frontend'  # Substitua pelo nome do seu App Service
+          slot-name: 'production'
+          package: ./frontend-dist
+
+      - name: Test deployment
+        run: |
+          echo "Testing frontend deployment..."
+          sleep 30
+          
+          # Test if the app is responding
+          FRONTEND_URL="https://twenty-crm-frontend.azurewebsites.net"
+          
+          if curl -f -s "$FRONTEND_URL" > /dev/null; then
+            echo "✅ Frontend deployment successful!"
+          else
+            echo "❌ Frontend deployment failed - app not responding"
+            exit 1
+          fi
+
+      - name: Update Backend CORS if needed
+        run: |
+          echo "🔄 Remember to update backend CORS settings to include:"
+          echo "   - https://twenty-crm-frontend.azurewebsites.net"
+          echo "   - Your custom domain (if configured)"
