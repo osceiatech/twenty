@@ -15,3 +15,7 @@ jobs:
           repository: twentyhq/twenty-infra
           event-type: auto-deploy-main
           client-payload: '{"github": ${{ toJson(github) }}}' # Passes the entire github context to the downstream workflow
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
